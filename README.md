@@ -1,220 +1,195 @@
-# AI Inquiry Processor — AI Customer Support Desk
+# TriageDesk
 
-**A lightweight Python service that triages customer inquiries with LLM structured outputs, and a working support desk core on top: customers, tickets, inbox, tags, assignment, notes, history, search, AI analysis with suggested replies, RBAC and an audit log — CLI, REST API, SQLite, 280 offline tests.**
+**An AI triage desk for customer inquiries.** LLM structured outputs summarize, categorize and prioritize incoming messages, while a working support desk on the same SQLite database handles customers, tickets, tags, assignment, internal notes, history, search, audit and RBAC. Ships with a bilingual web UI, a CLI, a REST API and 300 offline tests.
 
-`Python 3.11+` · `FastAPI` · `OpenAI SDK (structured outputs)` · `SQLite` · `pytest (offline)` · `Docker`
+![TriageDesk inbox — English interface](docs/screenshots/triage-desk-en.png)
 
-> Independent portfolio project. OpenAI integration is fully implemented and tested against a fake SDK — default tests never call the network. Demo mode needs no credentials. Real OpenAI calls require your own key. The built-in authentication is a development/demo mechanism, not production identity management.
+**Documentation:** [English](README.md) · [简体中文](README.zh-CN.md)
 
-**AI-generated fields are suggestions / classifications and may require human review.** The system stores them as advisory data (`ai_*` fields); it never presents them as decided facts and never auto-sends generated replies.
+`Python 3.11+` · `FastAPI` · `OpenAI SDK (structured outputs)` · `SQLite` · `pytest (offline)` · `Docker` · zero-build vanilla JS UI
+
+> Independent portfolio project. The OpenAI integration is fully implemented and tested against a fake SDK, but the default test/demo path never touches the network. Demo mode needs no credentials. Built-in authentication is a development mechanism, not production identity management. **AI output is advisory** (`ai_*` fields): classifications and drafts for human review, never auto-sent and never presented as decided facts.
 
 ---
 
-## Project Overview
+## Why the rename
 
-Phase 1 was a CSV → LLM → CSV triage tool. Phase 2 added a service layer, REST API, SQLite persistence and idempotency. Phase 3 evolves it into an **AI Customer Support Desk** core:
+The project started as **AI Inquiry Processor** — a CSV → LLM → CSV triage script. It has since grown into a support desk with tickets, agents, workflow and a web UI, so the old name described only the first stage. It is now **TriageDesk**: *triage* is the core job, *desk* is the product.
 
-```
-Customer ──▶ Ticket ──▶ AI Processing (summary / category / urgency / sentiment)
-               │              ▲
-               │              └── always via LLMClient → OpenAI | Mock
-               ├── Tags · Assignment · Status workflow
-               ├── Internal Notes · Conversation messages
-               └── History events · Audit log
-```
+What changed: package and distribution name (`triagedesk`), CLI command (`triagedesk`), app title, Docker image/service names, documentation, and the `TRIAGEDESK_*` environment prefix. The old `AI_INQUIRY_*` variables are still accepted so existing `.env` files keep working. The GitHub repository is still named `ai-inquiry-processor` until you rename it in the repository settings — update the clone URL when you do.
 
-## Features
+---
 
-- **Inbox** — list/filter tickets by status (`open/pending/resolved/closed`), priority (`low/normal/high/urgent`), assignee (incl. unassigned), customer and tag; full-text search across subject, customer name/email and message bodies.
-- **Tickets with a real workflow** — explicit, enforced status transitions (invalid transitions get `409`), reopen supported, resolution timestamps managed automatically.
-- **Customers** — create/find/search; duplicate emails resolve to the same customer; per-customer ticket lists.
-- **Tags** — admin-managed vocabulary, linked to tickets (idempotent link/unlink).
-- **Agents & assignment** — `agent` and `admin` roles; assign/unassign with permission rules; per-agent queues.
-- **Internal notes** — agent-only remarks with authorship, distinct from the customer conversation.
-- **Ticket history** — every status/priority/assignment/tag/note/AI change recorded as an event with actor + JSON metadata.
-- **AI analysis** — summary, key points, category, suggested priority, urgency, sentiment per ticket (advisory only). Provider-agnostic via the `LLMClient` abstraction with strict `json_schema` outputs and response re-validation.
-- **AI suggested reply** — a draft generated from the latest customer message; stored on the ticket, clearly labelled as a draft, never auto-sent.
-- **Duplicate detection** — content-hash (SHA-256 over customer + normalized message); re-submitting the same open ticket's content returns `409` with the existing ticket id. Closed tickets can be re-submitted fresh. (The Phase 2 inquiry pipeline keeps its own idempotency: identical inquiries return the stored result, flagged `duplicate`.)
-- **RBAC + audit log** — minimal role checks in the service layer; every important action lands in a queryable audit log (admin-only read).
-- **Resilience (Phase 2 heritage)** — timeout, retry with exponential backoff, `Retry-After` honored, retryable-vs-permanent error taxonomy, per-item failure isolation, usage/latency tracking (null when the provider reports nothing — never fabricated).
-
-## Architecture
-
-```
-            ┌─────────────┐   ┌──────────────────────────────────┐
-            │  CLI        │   │  FastAPI (src/api.py)            │
-            │ (src.main)  │   │  inquiry endpoints + desk router │
-            └──────┬──────┘   └───────┬──────────────────┬───────┘
-                   │                  │                  │
-                   ▼                  ▼                  ▼
-        ┌────────────────────┐  ┌──────────────────────────────────┐
-        │ InquiryService     │  │ DeskService (src/desk/service.py)│
-        │ (src/service.py)   │  │ workflow · RBAC · dedup · audit  │
-        └─────────┬──────────┘  └───────┬──────────────┬───────────┘
-                  ▼                     ▼              ▼
-        ┌────────────────────┐  ┌─────────────┐  ┌───────────────┐
-        │ InquiryProcessor   │  │ desk.ai     │  │ DeskStore     │
-        └─────────┬──────────┘  └──────┬──────┘  └──────┬────────┘
-                  ▼                    ▼                ▼
-        ┌──────────────────────────────────────────────────────────┐
-        │ LLMClient protocol → OpenAIClient (strict json_schema,   │
-        │ retry/backoff) | MockLLMClient (deterministic, offline)  │
-        └──────────────────────────────────────────────────────────┘
-                  ▼
-        SQLite (one file): inquiries + processing_runs (Phase 2)
-                         + customers/agents/tags/tickets/messages/
-                           notes/ticket_tags/ticket_events/audit_log (Phase 3)
-```
-
-Layering rules: the API never writes SQL and never calls a provider; the service never imports FastAPI; all AI goes through `LLMClient`.
-
-## Data Model
-
-Phase 2 tables (unchanged): `inquiries` (content-hash id, status, analysis, usage), `processing_runs`.
-
-Phase 3 tables (added by idempotent migration; old databases keep working):
-
-| Table | Key fields |
-| --- | --- |
-| `customers` | `id`, `name`, `email` (unique), `external_id?`, timestamps |
-| `agents` | `id`, `name`, `email` (unique), `role` (`agent`/`admin`), `active`, timestamps |
-| `tags` | `id`, `name` (unique, case-insensitive) |
-| `tickets` | `id`, `customer_id`→customers, `subject`, `status`, `priority`, `assignee_id`→agents?, `content_hash`, `resolved_at?`, `ai_summary`, `ai_key_points` (JSON), `ai_category`, `ai_suggested_priority`, `ai_urgency`, `ai_sentiment`, `ai_reply`, `ai_analyzed_at`, `ai_provider/model/tokens`, timestamps |
-| `ticket_messages` | `id`, `ticket_id`→tickets, `author_type` (`customer`/`agent`/`system`), `author_name`, `body`, `content_hash` |
-| `internal_notes` | `id`, `ticket_id`, `author_id`, `author_name`, `body` |
-| `ticket_tags` | (`ticket_id`, `tag_id`) composite PK |
-| `ticket_events` | `id`, `ticket_id`, `event_type`, `actor_id?`, metadata JSON |
-| `audit_log` | `id`, `actor_id?`, `action`, `entity_type`, `entity_id`, metadata JSON |
-
-Vocabularies: status `open/pending/resolved/closed` · priority & urgency `low/normal/high/urgent` · sentiment `positive/neutral/negative` · AI category reuses the Phase 2 set `Sales / Technical Support / Billing / General Question`.
-
-Indexes on ticket status, priority, assignee, customer, updated_at, content_hash. All SQL is parameterized; foreign keys enforced.
-
-## Running Locally
+## Quick start
 
 ```bash
 git clone https://github.com/taozhihaoo/ai-inquiry-processor.git
 cd ai-inquiry-processor
+
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1        # PowerShell; source .venv/bin/activate on bash
+# Windows: .venv\Scripts\Activate.ps1    macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
 
-python -m src.main --demo                          # CLI triage demo (offline)
-uvicorn src.api:app --host 127.0.0.1 --port 8000   # API with desk (mock provider)
-# Swagger UI: http://127.0.0.1:8000/docs
+python -m src.desk.seed --lang en        # fictional demo data, fully offline
+uvicorn src.api:app --host 127.0.0.1 --port 8000
 ```
 
-## Demo / Seed Data
+Open **http://127.0.0.1:8000/** for the UI, or **http://127.0.0.1:8000/docs** for Swagger. On first visit, pick one of the seeded agent identities (see [Development authentication](#development-authentication)). The server defaults to the `mock` provider, so everything works without an API key.
 
-Fictional demo dataset (3 agents, 4 customers, 6 tags, 8 tickets across all statuses/priorities, 3 AI-analyzed, 1 AI reply draft — one seeded ticket deliberately demonstrates duplicate detection):
+For a Chinese demo dataset, run `python -m src.desk.seed --lang zh --reset` before starting the server.
+
+## Web UI
+
+The UI is served by FastAPI from `src/desk/web/` — plain HTML/CSS/JS, no bundler, no CDN, no Node.js. The Chinese interface is shown in the [中文 README](README.zh-CN.md).
+
+- **Inbox** — filter by status, priority, assignee and tag; full-text search; a three-pane layout with ticket list, conversation and an AI insights panel.
+- **Ticket workflow** — move through `open → pending → resolved → closed` (invalid transitions are rejected by the API), assign/unassign, manage tags, record customer messages and internal notes, and read the activity timeline.
+- **AI actions** — analyze a ticket (summary, key points, category, suggested priority, urgency, sentiment) or generate a reply draft. Results are labelled advisory; the draft can be copied but is never sent.
+- **Customers, Team, Audit** — customer directory, agents and tags, and an admin-only audit log.
+- **Bilingual + themes** — switch between English and 简体中文 and between light and dark in the sidebar; the choice is remembered in `localStorage`.
+- **Responsive** — desktop three-pane layout collapses to a single column on narrow screens.
+
+## CLI — inquiry triage pipeline
+
+The original CSV pipeline is still available (and installable as a console script):
 
 ```bash
-python -m src.desk.seed                             # seed data/inquiries.db (skips if populated)
-python -m src.desk.seed --db path/to/db.sqlite      # explicit target
-python -m src.desk.seed --reset                     # wipe desk tables, reseed (inquiries kept)
+triagedesk --demo                              # offline deterministic mock provider
+triagedesk --version
+triagedesk -i inquiries.csv -o output --format both
+python -m src.main --demo --db data/demo.db    # equivalent module invocation
 ```
 
-To explore the API as a seeded admin, pass `X-Agent-Id: <admin id>` — get ids with:
-
-```bash
-python -c "from src.desk.storage import DeskStore; [print(a.id, a.role, a.name) for a in DeskStore('data/inquiries.db').list_agents()]"
-```
+The CLI loads a CSV with `customer_name,message` columns, persists every result to SQLite with idempotent content hashes, and writes JSON + CSV reports. Without `--demo` it uses the `openai` provider and requires `OPENAI_API_KEY`.
 
 ## REST API
 
-Interactive docs at `/docs` (Swagger, Try-it-out). Existing Phase 2 endpoints are unchanged: `GET /health`, `POST /inquiries`, `POST /inquiries/batch`, `GET /inquiries/{id}`.
-
-Desk endpoints (all require the `X-Agent-Id` dev-auth header):
+Interactive docs at `/docs`. All desk endpoints require the `X-Agent-Id` development header.
 
 ```
-POST   /customers                      create (200 existing / 201 new)
-GET    /customers?search=              list/search
-GET    /customers/{id}                 fetch
-GET    /customers/{id}/tickets         customer's tickets
+GET    /health                          liveness + provider
+POST   /inquiries                       triage one inquiry (idempotent)
+POST   /inquiries/batch                 batch triage (max 1000 items)
+GET    /inquiries/{id}                  stored result
 
-GET    /tickets                        inbox: ?status= ?priority= ?assignee=|none
-                                       ?customer_id= ?tag= ?search= ?limit= ?offset=
-POST   /tickets                        create (409 on duplicate content)
-GET    /tickets/{id}                   detail (ticket + customer + assignee + tags + messages)
-PATCH  /tickets/{id}                   status/priority/subject (409 on invalid transition)
-POST   /tickets/{id}/assign            { "agent_id": "..." }
-POST   /tickets/{id}/unassign
-POST   /tickets/{id}/messages          record an inbound customer message
-POST   /tickets/{id}/notes             internal note      GET …/notes
-POST   /tickets/{id}/tags              { "tag_id": "..." }   DELETE …/tags/{tag_id}
-GET    /tickets/{id}/history           ticket events
-
-POST   /tickets/{id}/ai/analyze        summary/key points/category/urgency/sentiment
-POST   /tickets/{id}/ai/suggest-reply  draft reply (never auto-sent)
-
-GET    /tags                           POST /tags                (admin)
-GET    /agents                         POST /agents              (admin)
-GET    /agents/{id}/tickets
-GET    /audit                          admin-only, newest first
+GET    /auth/dev/agents                 demo identities for the UI (no auth)
+GET    /tickets                         inbox: status, priority, assignee, tag, search…
+POST   /tickets                         create (409 on duplicate content)
+GET    /tickets/{id}                    ticket + customer + assignee + tags + messages
+PATCH  /tickets/{id}                    status / priority / subject
+POST   /tickets/{id}/assign | /unassign
+POST   /tickets/{id}/messages | /notes | /tags
+GET    /tickets/{id}/notes | /tags | /history
+POST   /tickets/{id}/ai/analyze | /ai/suggest-reply
+GET    /customers   POST /customers    GET /customers/{id}/tickets
+GET    /tags        POST /tags         (admin)
+GET    /agents      POST /agents       (admin)
+GET    /audit                          (admin)
 ```
 
-Status codes in use: `200/201/204` success · `400` validation · `401` missing/unknown/inactive agent · `403` insufficient role · `404` unknown entity · `409` duplicate ticket / invalid transition · `422` malformed body · `502` provider failure. Errors are always `{"error": {"code", "message", ...}}` — no tracebacks, no internals.
+Status codes: `200/201/204` success · `400` validation · `401` missing/unknown/inactive agent · `403` insufficient role · `404` unknown entity · `409` duplicate / invalid transition · `422` malformed body / invalid filter · `502` provider failure. Errors are always `{"error": {"code", "message"}}` — no tracebacks, no internals.
 
-## AI Capabilities
+## Architecture
 
-| Operation | Endpoint/service path | Output (advisory) |
+```
+   Browser (bilingual SPA)          CLI (triagedesk)        Swagger / HTTP client
+            │                              │                        │
+            └──────────────┬───────────────┴────────────────────────┘
+                           ▼
+              FastAPI  src/api.py  ·  src/desk/api.py
+              (transport: validation, dev auth, error mapping)
+                           │
+             ┌─────────────┴─────────────┐
+             ▼                           ▼
+      InquiryService              DeskService
+      (idempotent triage)         (workflow · RBAC · dedup · audit)
+             │                           │
+             └─────────────┬─────────────┘
+                           ▼
+        LLMClient protocol → OpenAIClient (strict json_schema,
+        retry/backoff) | MockLLMClient (deterministic, offline)
+                           ▼
+           SQLite (one file): inquiries + processing_runs
+             + customers / agents / tags / tickets / messages
+               / notes / ticket_tags / ticket_events / audit_log
+```
+
+Layering rules: the API never writes SQL and never calls a provider; services never import FastAPI; all AI goes through `LLMClient`. Schema creation is idempotent, so a database from an earlier version keeps its data and only gains tables.
+
+## Data model
+
+| Table | Key fields |
+| --- | --- |
+| `customers` | `id`, `name`, `email` (unique), `external_id?`, timestamps |
+| `agents` | `id`, `name`, `email` (unique), `role` (`agent`/`admin`), `active` |
+| `tags` | `id`, `name` (unique, case-insensitive) |
+| `tickets` | `id`, `customer_id`, `subject`, `status`, `priority`, `assignee_id?`, `content_hash`, `resolved_at?`, advisory `ai_*` fields, timestamps |
+| `ticket_messages` | `id`, `ticket_id`, `author_type` (`customer`/`agent`/`system`), `body`, `content_hash` |
+| `internal_notes` | `id`, `ticket_id`, `author_id`, `author_name`, `body` |
+| `ticket_tags` | (`ticket_id`, `tag_id`) composite primary key |
+| `ticket_events` | `id`, `ticket_id`, `event_type`, `actor_id?`, JSON metadata |
+| `audit_log` | `id`, `actor_id?`, `action`, `entity_type`, `entity_id`, JSON metadata |
+
+Vocabularies: status `open/pending/resolved/closed` · priority and urgency `low/normal/high/urgent` · sentiment `positive/neutral/negative` · category `Sales / Technical Support / Billing / General Question`. All SQL is parameterized, foreign keys are enforced, and connections use WAL plus a busy timeout.
+
+## Demo data
+
+`python -m src.desk.seed` seeds 3 agents, 4 customers, 6 tags and 8 tickets across all statuses and priorities, with 3 AI analyses, 1 AI reply draft, 2 internal notes and one deliberate duplicate-detection case. `--lang en|zh` picks the language, `--db PATH` the database, `--reset` wipes only the desk tables (inquiry rows are kept) and reseeds. Timestamps are staggered so the inbox reads like a real queue. Seeding is idempotent: a second run does nothing.
+
+## AI capabilities
+
+| Operation | Path | Output (advisory) |
 | --- | --- | --- |
-| Ticket analysis | `POST /tickets/{id}/ai/analyze` → `DeskService.ai_analyze_ticket` → `desk.ai` → `LLMClient.complete_structured` | summary, 1–5 key points, category, suggested priority, urgency, sentiment |
-| Suggested reply | `POST /tickets/{id}/ai/suggest-reply` | draft text generated from the latest customer message; stored as `ai_reply`, labelled as a draft |
-| Inquiry triage | Phase 2 pipeline unchanged | summary, category, priority |
+| Ticket analysis | `POST /tickets/{id}/ai/analyze` → `DeskService` → `desk.ai` → `LLMClient.complete_structured` | summary, 1–5 key points, category, suggested priority, urgency, sentiment |
+| Suggested reply | `POST /tickets/{id}/ai/suggest-reply` | draft text from the latest customer message; stored as `ai_reply`, never auto-sent |
+| Inquiry triage | CLI / `POST /inquiries` | summary, category, priority |
 
-All calls pin a strict `json_schema` response format **and** are re-validated against the vocabularies before persistence. The mock provider implements the same schemas deterministically (keyword heuristics), so demos, tests and CI run fully offline; usage fields stay `null` for the mock — no fabricated tokens.
+Every call pins a strict `json_schema` response format **and** re-validates the payload against fixed vocabularies before persistence. The mock provider implements the same schemas deterministically (English + Chinese keyword heuristics), so demos, tests and CI run fully offline; usage fields stay `null` for the mock — no invented token counts.
 
-## Roles / Permissions
+## Roles and permissions
 
 | Capability | agent | admin |
 | --- | --- | --- |
-| View tickets/customers/tags/agents, search | ✅ | ✅ |
-| Modify ticket (status/priority/subject/assign/tags) | unassigned or own tickets | any ticket |
-| Add internal notes / customer messages, use AI | ✅ | ✅ |
-| Create customers | ✅ | ✅ |
+| View tickets, customers, tags, agents; search | ✅ | ✅ |
+| Modify a ticket | unassigned or own tickets | any ticket |
+| Add notes/messages, use AI, create customers | ✅ | ✅ |
 | Create agents, create tags, read audit log | ❌ | ✅ |
 
-**Development authentication (demo only):** send `X-Agent-Id: <agent id>`. Unknown, missing or deactivated ids get `401`; insufficient role gets `403`. This exists so the RBAC layer is real and testable without building an identity provider. **It is not production authentication** — no OAuth, no JWT, no SSO, no secrets. Put the service behind your own gateway for anything real.
+### Development authentication
 
-## Audit Log
-
-`GET /audit` (admin) returns entries for ticket created/status/priority changes, assignment changes, tag changes, notes, messages, AI actions, customer and agent creation. Entries carry actor id, action, entity, and whitelisted metadata only — no prompts, no credentials, no authorization headers.
-
-## Search
-
-`GET /tickets?search=<term>` matches ticket subject, customer name, customer email and message bodies via parameterized SQLite `LIKE` with user wildcards escaped. No Elasticsearch, no external services.
-
-## Testing
-
-```bash
-pytest        # 280 tests, fully offline: fake SDK, mock LLM, temp SQLite
-ruff check .  # lint (CI enforces)
-```
-
-Coverage highlights: workflow transitions (valid/invalid/no-op), RBAC (401/403 paths), duplicate detection, assignment permissions, notes/tags/history/audit, AI analyze + suggest reply (advisory-only asserted), migration from a Phase 2 database (old data preserved, new tables added, app boots), seed idempotency, full HTTP contract (`200/201/204/400/401/403/404/409/422`), plus all 139 Phase 2 tests kept green. CI also runs the lint, the migration tests, and executes the seed CLI twice on a fresh database.
-
-## OpenAI API Usage
-
-Implemented but **not executed against the live API** in the environment where this README was last verified (no `OPENAI_API_KEY` present — stated deliberately). To run for real:
-
-```bash
-export LLM_PROVIDER=openai
-export OPENAI_API_KEY=your-key        # https://platform.openai.com/api-keys
-```
-
-Set it for the CLI or `docker compose up` (see below). Token usage is stored when the provider reports it and stays `null` otherwise; `estimated_cost` (inquiry pipeline) requires explicitly configured prices and is an **estimate**, never a billing figure.
+Send `X-Agent-Id: <agent id>`; the UI offers a picker backed by `GET /auth/dev/agents`, which exposes only id/name/role of active agents. Unknown, missing or inactive ids get `401`, insufficient role gets `403`. **This is not production authentication** — no OAuth, no JWT, no SSO, no secrets. Put the service behind a real gateway for anything real.
 
 ## Configuration
 
-See [`.env.example`](.env.example). Key variables: `LLM_PROVIDER` (`openai`/`mock`), `OPENAI_API_KEY`, `OPENAI_MODEL`, `OPENAI_BASE_URL`, `LLM_TIMEOUT_SECONDS`, `LLM_MAX_RETRIES`, `LLM_RETRY_INITIAL_DELAY`, `LLM_RETRY_MAX_DELAY`, `AI_INQUIRY_DB_PATH`, `AI_INQUIRY_OUTPUT_DIR`, optional `LLM_PRICE_*_PER_MTOK`. Defaults: mock provider for bare `uvicorn` and Docker; `openai` for a bare CLI run.
+See [`.env.example`](.env.example). App-owned settings use `TRIAGEDESK_*`; the legacy `AI_INQUIRY_*` names still work.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `LLM_PROVIDER` / `TRIAGEDESK_PROVIDER` | `mock` for the server, `openai` for a bare CLI run | `openai` or `mock` |
+| `OPENAI_API_KEY` | — | required only for real OpenAI calls |
+| `OPENAI_MODEL` | `gpt-4o-mini` | model name |
+| `OPENAI_BASE_URL` | — | compatible endpoint override |
+| `LLM_TIMEOUT_SECONDS`, `LLM_MAX_RETRIES`, `LLM_RETRY_INITIAL_DELAY`, `LLM_RETRY_MAX_DELAY` | `30`, `3`, `1.0`, `10.0` | timeout and exponential backoff |
+| `TRIAGEDESK_DB_PATH` | `data/triagedesk.db` | SQLite file |
+| `TRIAGEDESK_OUTPUT_DIR` | `output` | CLI reports |
+| `LLM_PRICE_INPUT_PER_MTOK`, `LLM_PRICE_OUTPUT_PER_MTOK` | unset | optional cost estimate; `estimated_cost` stays `null` unless both prices and real usage exist |
+
+Token usage is stored only when the provider reports it; `estimated_cost` is an estimate, never a billing figure.
+
+## Testing and CI
+
+```bash
+pytest           # 300 tests, fully offline: fake SDK, mock LLM, temp SQLite
+ruff check .     # lint (CI enforces)
+```
+
+GitHub Actions runs on Python 3.11 / 3.12 / 3.13: lint, import check, migration tests, both demo-language seed runs (each twice), the full suite, a UI/API smoke test, a wheel build that verifies `src.desk` and all web assets are packaged, and a `triagedesk --version` console-script check. No job has credentials.
 
 ## Running with Docker
 
 ```bash
-docker compose up          # mock provider; Swagger at http://127.0.0.1:8000/docs
+docker compose up          # mock provider; UI at http://127.0.0.1:8000/
 curl http://127.0.0.1:8000/health
-python -m src.desk.seed --db <volume path>/data/inquiries.db   # optional demo data
 ```
 
 Non-root container, named volumes for `/app/data` and `/app/output`, healthcheck on `/health`. `.env` is never baked into the image; inject secrets at runtime:
@@ -223,60 +198,29 @@ Non-root container, named volumes for `/app/data` and `/app/output`, healthcheck
 LLM_PROVIDER=openai OPENAI_API_KEY=sk-... docker compose up
 ```
 
-*Docker config is provided but has not been executed in this environment (no Docker daemon available at verification time).*
+*Docker configuration is provided but was not executed in the environment where this README was written.*
 
-## Security Notes
-
-- API keys only from environment variables; never hardcoded, logged, or returned.
-- All SQL parameterized; foreign keys on; user search input wildcard-escaped.
-- Customer text travels as JSON data with a fixed system prompt; a test asserts prompt-injection attempts cannot alter instructions.
-- AI payloads re-validated against fixed vocabularies before persistence.
-- Error responses are structured and opaque (`{"error": {...}}`) — no tracebacks, no provider internals.
-- Audit log stores whitelisted metadata only.
-- `data/`, `output/`, `.env` are git-ignored; sample data is fictional.
-- Development authentication is explicitly not production auth (see above).
-
-## Project Structure
-
-```
-src/
-├── config.py · models.py · csv_loader.py · report_writer.py     # shared core
-├── llm_client.py        # LLMClient protocol, OpenAI + Mock, retry policy,
-│                        # complete_structured() building block for all AI
-├── processor.py · service.py · storage.py · main.py             # inquiry pipeline
-├── api.py               # FastAPI app: inquiry endpoints + mounted desk router
-└── desk/
-    ├── models.py        # dataclasses + vocabularies + validation
-    ├── workflow.py      # allowed status transitions
-    ├── storage.py       # DeskStore: customers/tickets/tags/agents/notes/events/audit
-    ├── ai.py            # ticket analysis + suggested reply prompts/schemas/validation
-    ├── auth.py          # dev authentication + AgentContext + role checks
-    ├── service.py       # DeskService: RBAC, workflow, dedup, history, audit
-    ├── api.py           # desk REST router (thin transport)
-    └── seed.py          # fictional demo dataset (python -m src.desk.seed)
-tests/                   # 280 offline tests (12 Phase 2 files + 6 desk files)
-Dockerfile · docker-compose.yml · .github/workflows/ci.yml
-```
-
-## Current Limitations
+## Current limitations
 
 Stated plainly:
 
-- **Development authentication only** — `X-Agent-Id` header, no real identity provider.
-- **SQLite, single process** — right for this scale; concurrent multi-instance writes need a real database server.
-- **Synchronous AI calls** — no background workers/queues; batch endpoints are bounded (API: 1000 items).
-- **Duplicate detection is hash-based** — same customer + normalized text only; no semantic similarity (intentional).
-- **No frontend** — Swagger is the UI; seed data makes it demoable.
-- **OpenAI path unverified against the live API** in this environment; Docker config not executed here.
-- Not "production-ready" or "battle-tested" — a well-tested, honestly-scoped portfolio project.
+- **Development authentication only** (`X-Agent-Id`); no identity provider.
+- **SQLite, single process** — right for this scale; multi-instance writes need a real database server.
+- **Synchronous AI calls** — no background workers; batch endpoints are bounded (1000 items in the API).
+- **Duplicate detection is hash-based** (customer + normalized message), not semantic.
+- **The OpenAI path was not verified against the live API** in this environment; Docker was not executed either.
+- Not "production-ready" or "battle-tested" — a well-tested, honestly scoped portfolio project.
 
-## Future Extensions
+## Security
 
-Planned (not implemented — do not assume otherwise):
-
-- **Email ingestion** — inbound email → ticket (the message layer and content-hash dedup are the natural insertion point).
-- **Webhook integration** — outbound events on ticket changes (ticket_events is the feed).
-- Real authentication (OIDC/JWT), background AI workers, per-customer portals.
+- API keys come only from environment variables; they are never hardcoded, logged or returned.
+- All SQL is parameterized; foreign keys are on; user search wildcards are escaped.
+- Customer text travels as JSON data with a fixed system prompt; prompt-injection attempts cannot alter instructions, and a test covers this.
+- AI payloads are re-validated against fixed vocabularies before persistence.
+- Error responses are structured and opaque — no tracebacks, no provider internals.
+- The audit log stores whitelisted metadata only.
+- `data/`, `output/` and `.env` are git-ignored; demo data is fictional.
+- Development authentication is explicitly not production authentication.
 
 ## License
 

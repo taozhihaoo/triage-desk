@@ -66,7 +66,9 @@ class TestWithoutApiKey:
         with pytest.raises(SystemExit) as excinfo:
             main(["--version"])
         assert excinfo.value.code == 0
-        assert capsys.readouterr().out.strip().endswith("1.0.0")
+        from src import __version__
+
+        assert capsys.readouterr().out.strip().endswith(__version__)
 
 
 class TestInputErrors:

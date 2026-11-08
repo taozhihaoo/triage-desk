@@ -316,23 +316,29 @@ class MockLLMClient:
     small keyword heuristic that mirrors the real prompt's decision rules.
     """
 
+    # English + Chinese keywords: the demo dataset ships in both languages, and a
+    # bilingual heuristic keeps ``--demo`` meaningful for either.
     SUPPORT_KEYWORDS = (
         "log in", "login", "log into", "password", "error", "crash", "bug",
         "not working", "broken", "locked", "reset", "cannot access",
         "can't access", "outage", "down",
+        "登录", "登陆", "密码", "报错", "崩溃", "打不开", "无法访问", "宕机", "锁定",
     )
     SALES_KEYWORDS = (
         "quote", "price", "pricing", "plan", "seats", "enterprise", "upgrade",
         "discount", "trial", "annual", "purchase", "license",
+        "报价", "价格", "套餐", "席位", "采购", "试用", "企业版",
     )
     BILLING_KEYWORDS = (
         "refund", "charged", "charge", "invoice", "duplicate", "payment",
         "billing", "credit card",
+        "退款", "扣款", "账单", "发票", "付款", "重复扣",
     )
     URGENT_KEYWORDS = (
         "urgent", "asap", "immediately", "emergency", "locked out",
         "cannot process", "can't process", "blocked", "fraud", "security",
         "outage", "down", "since this morning",
+        "紧急", "立刻", "马上", "无法下单", "被锁定", "损失", "故障",
     )
 
     SUMMARY_MAX_CHARS = 140
@@ -379,8 +385,12 @@ class MockLLMClient:
     _NEGATIVE_KEYWORDS = (
         "angry", "frustrated", "unacceptable", "worst", "terrible", "fed up",
         "ridiculous", "disappointed", "useless",
+        "生气", "失望", "无法接受", "太差", "投诉", "糟糕",
     )
-    _POSITIVE_KEYWORDS = ("thanks", "thank you", "great", "love", "appreciate", "awesome")
+    _POSITIVE_KEYWORDS = (
+        "thanks", "thank you", "great", "love", "appreciate", "awesome",
+        "谢谢", "感谢", "很棒", "满意", "好用",
+    )
 
     def _ticket_analysis_payload(self, data: dict) -> dict[str, Any]:
         subject = str(data.get("subject", ""))
@@ -406,7 +416,9 @@ class MockLLMClient:
         else:
             sentiment = sentiment_hint
         key_points = [
-            sentence.strip() for sentence in re.split(r"(?<=[.!?])\s+", message.strip()) if sentence.strip()
+            sentence.strip()
+            for sentence in re.split(r"(?<=[.!?])\s+|(?<=[。！？])", message.strip())
+            if sentence.strip()
         ][:3] or [message.strip()[:120]]
         summary = f"{data.get('customer_name', '')}: {subject}".strip()
         return {
@@ -418,11 +430,27 @@ class MockLLMClient:
             "sentiment": sentiment,
         }
 
+    _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+
     def _suggested_reply_payload(self, data: dict) -> dict[str, Any]:
         name = str(data.get("customer_name", "there")) or "there"
         subject = str(data.get("subject", "your request"))
         message = str(data.get("message", "")).strip()
-        first_sentence = re.split(r"(?<=[.!?])\s+", message, maxsplit=1)[0][:160]
+        first_sentence = [
+            part.strip()
+            for part in re.split(r"(?<=[.!?])\s+|(?<=[。！？])", message)
+            if part.strip()
+        ][:1]
+        first_sentence = (first_sentence[0] if first_sentence else message)[:160]
+        if self._CJK_RE.search(message + subject):
+            quote = first_sentence.rstrip("。！？.!?")
+            return {"reply": (
+                f"{name}您好，\n\n"
+                f"感谢您就「{subject}」联系我们。"
+                f"我们理解您遇到的情况是：「{quote}」。"
+                "我们正在跟进处理，会尽快把下一步安排同步给您。\n\n"
+                "此致\n客服团队"
+            )}
         reply = (
             f"Hi {name},\n\n"
             f"Thanks for reaching out about \"{subject}\". "
@@ -449,7 +477,12 @@ class MockLLMClient:
         return "Low"
 
     def _summarize(self, customer_name: str, message: str) -> str:
-        first_sentence = re.split(r"(?<=[.!?])\s+", message.strip(), maxsplit=1)[0]
+        sentences = [
+            part.strip()
+            for part in re.split(r"(?<=[.!?])\s+|(?<=[。！？])", message.strip())
+            if part.strip()
+        ]
+        first_sentence = sentences[0] if sentences else message.strip()
         if len(first_sentence) > self.SUMMARY_MAX_CHARS:
             first_sentence = first_sentence[: self.SUMMARY_MAX_CHARS - 3] + "..."
         return f"{customer_name}: {first_sentence}"

@@ -38,7 +38,7 @@ class TestJsonReport:
         report = json.loads(path.read_text(encoding="utf-8"))
 
         metadata = report["report_metadata"]
-        assert metadata["tool"] == "ai-inquiry-processor"
+        assert metadata["tool"] == "triagedesk"
         assert metadata["provider"] == "openai"
         assert metadata["model"] == "gpt-4o-mini"
         assert "generated_at_utc" in metadata

@@ -13,6 +13,8 @@ from src.models import InquiryResult
 
 logger = logging.getLogger(__name__)
 
+TOOL_NAME = "triagedesk"
+
 CSV_FIELDS = ["row_number", "customer_name", "status", "summary", "category", "priority", "error"]
 RECORD_CSV_FIELDS = [
     "row_number", "id", "customer_name", "status", "summary", "category", "priority", "error_message",
@@ -61,7 +63,7 @@ def build_json_report(results: list[InquiryResult], *, provider: str, model: str
     return {
         "report_metadata": {
             "generated_at_utc": datetime.now(UTC).isoformat(timespec="seconds"),
-            "tool": "ai-inquiry-processor",
+            "tool": TOOL_NAME,
             "tool_version": __version__,
             "provider": provider,
             "model": model,
@@ -107,7 +109,7 @@ def build_run_report(
     duplicates = sum(1 for row in rows if row.get("duplicate"))
     metadata = {
         "generated_at_utc": datetime.now(UTC).isoformat(timespec="seconds"),
-        "tool": "ai-inquiry-processor",
+        "tool": TOOL_NAME,
         "tool_version": __version__,
         "provider": provider,
         "model": model,

@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TriageDesk</title>
+<meta name="description" content="AI triage desk for customer inquiries.">
+<link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+
+<!-- ── identity gate (development authentication) ───────────────────────────── -->
+<div class="gate" id="gate" hidden>
+  <div class="gate-card">
+    <div class="gate-brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span>TriageDesk</span>
+    </div>
+    <h1 data-i18n="gateTitle">Sign in as a support agent</h1>
+    <p class="muted" data-i18n="gateHint">
+      Development authentication: pick a seeded identity. The API receives it as the X-Agent-Id header.
+    </p>
+    <div class="agent-choices" id="agent-choices"></div>
+    <p class="gate-foot muted" data-i18n="gateFoot">
+      Demo identities only. Real deployments replace this with an identity provider.
+    </p>
+  </div>
+</div>
+
+<!-- ── application shell ────────────────────────────────────────────────────── -->
+<div class="app" id="app" hidden>
+  <aside class="sidebar">
+    <a class="brand" href="#/inbox">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-text">
+        <strong>TriageDesk</strong>
+        <small data-i18n="brandTagline">AI triage desk</small>
+      </span>
+    </a>
+
+    <nav class="nav" id="nav">
+      <a class="nav-item" data-route="inbox" href="#/inbox">
+        <span data-icon="inbox"></span><span data-i18n="navInbox">Inbox</span>
+        <em class="nav-count" id="nav-count-inbox"></em>
+      </a>
+      <a class="nav-item" data-route="customers" href="#/customers">
+        <span data-icon="users"></span><span data-i18n="navCustomers">Customers</span>
+      </a>
+      <a class="nav-item" data-route="team" href="#/team">
+        <span data-icon="tag"></span><span data-i18n="navTeam">Team</span>
+      </a>
+      <a class="nav-item" data-route="audit" href="#/audit" id="nav-audit">
+        <span data-icon="shield"></span><span data-i18n="navAudit">Audit</span>
+      </a>
+    </nav>
+
+    <div class="sidebar-foot">
+      <button class="agent-card" id="agent-card" type="button" title="Switch identity">
+        <span class="avatar" id="agent-avatar"></span>
+        <span class="agent-meta">
+          <strong id="agent-name">—</strong>
+          <small id="agent-role">—</small>
+        </span>
+        <span data-icon="repeat" class="agent-switch"></span>
+      </button>
+      <div class="foot-row">
+        <button class="ghost-btn" id="lang-toggle" type="button" title="Language">
+          <span data-icon="globe"></span><span id="lang-label">EN</span>
+        </button>
+        <button class="ghost-btn" id="theme-toggle" type="button" title="Theme">
+          <span data-icon="moon" id="theme-icon"></span>
+        </button>
+      </div>
+      <div class="foot-links">
+        <a href="/docs" target="_blank" rel="noreferrer"><span data-i18n="apiDocs">API docs</span></a>
+        <span class="dot"></span>
+        <span id="provider-badge" class="provider-badge">mock</span>
+      </div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <!-- inbox -->
+    <section class="view inbox" id="view-inbox" hidden>
+      <div class="list-pane">
+        <header class="pane-head">
+          <div class="pane-title">
+            <h1 data-i18n="inboxTitle">Inbox</h1>
+            <span class="count-pill" id="ticket-count">0</span>
+          </div>
+          <button class="btn primary sm" id="new-ticket-btn" type="button">
+            <span data-icon="plus"></span><span data-i18n="newTicket">New ticket</span>
+          </button>
+        </header>
+        <div class="search">
+          <span data-icon="search"></span>
+          <input id="search-input" type="search" autocomplete="off"
+                 data-i18n-placeholder="searchPlaceholder" placeholder="Search tickets, customers, messages…">
+          <kbd>/</kbd>
+        </div>
+        <div class="chips" id="status-chips" role="tablist"></div>
+        <div class="filters">
+          <select id="filter-priority" class="select sm"></select>
+          <select id="filter-assignee" class="select sm"></select>
+          <select id="filter-tag" class="select sm"></select>
+        </div>
+        <div class="ticket-list" id="ticket-list"></div>
+      </div>
+      <div class="detail-pane" id="detail-pane"></div>
+    </section>
+
+    <!-- customers -->
+    <section class="view page" id="view-customers" hidden>
+      <div class="page-inner" id="customers-body"></div>
+    </section>
+
+    <!-- team -->
+    <section class="view page" id="view-team" hidden>
+      <div class="page-inner" id="team-body"></div>
+    </section>
+
+    <!-- audit -->
+    <section class="view page" id="view-audit" hidden>
+      <div class="page-inner" id="audit-body"></div>
+    </section>
+  </main>
+</div>
+
+<div id="modal-root"></div>
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
+<script src="/assets/i18n.js"></script>
+<script src="/assets/app.js"></script>
+</body>
+</html>

@@ -8,8 +8,8 @@ no SQL, no provider calls here.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, Query, Request
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field, field_validator
 
 from src.desk.auth import (
@@ -25,6 +25,7 @@ from src.desk.models import (
     TICKET_STATUSES,
     Agent,
     Customer,
+    DeskValidationError,
     Tag,
     Ticket,
 )
@@ -170,6 +171,28 @@ def build_desk_router(service: DeskService) -> APIRouter:
         require_admin(context)
         return context
 
+    # -- development authentication helper ---------------------------------------
+
+    @router.get("/auth/dev/agents")
+    def dev_agents():
+        """List the identities the dev-auth header accepts.
+
+        Part of the development authentication scheme, not a user directory: it
+        exists so the bundled UI can offer an agent switcher without hardcoding
+        ids, and it exposes only id/name/role of *active* agents. Replace it with
+        your identity provider when you replace ``X-Agent-Id``.
+        """
+        agents = service.store.list_agents(active_only=True)
+        return {
+            "mode": "development",
+            "header": DEV_AUTH_HEADER,
+            "provider": service.provider,
+            "model": service.model,
+            "items": [
+                {"id": agent.id, "name": agent.name, "role": agent.role} for agent in agents
+            ],
+        }
+
     # -- customers ---------------------------------------------------------------
 
     @router.post("/customers", status_code=201)
@@ -185,12 +208,12 @@ def build_desk_router(service: DeskService) -> APIRouter:
     def list_customers(
         actor: AgentContext = Depends(current_agent),
         search: str | None = None,
-        limit: int = 50,
-        offset: int = 0,
+        limit: int = Query(default=50, ge=1, le=200),
+        offset: int = Query(default=0, ge=0),
     ):
-        customers = service.list_customers(actor, search=search)
+        customers = service.list_customers(actor, search=search, limit=limit, offset=offset)
         return {
-            "total": len(customers),
+            "total": service.count_customers(actor, search=search),
             "items": [serialize_customer(item) for item in customers],
         }
 
@@ -230,8 +253,8 @@ def build_desk_router(service: DeskService) -> APIRouter:
         customer_id: str | None = None,
         tag: str | None = None,
         search: str | None = None,
-        limit: int = 50,
-        offset: int = 0,
+        limit: int = Query(default=50, ge=1, le=200),
+        offset: int = Query(default=0, ge=0),
     ):
         statuses = [item.strip() for item in status.split(",")] if status else None
         priorities = [item.strip() for item in priority.split(",")] if priority else None
@@ -240,15 +263,22 @@ def build_desk_router(service: DeskService) -> APIRouter:
                 return _error_response(
                     422, "invalid_status", f"status must be one of {list(TICKET_STATUSES)}"
                 )
+        invalid_priorities = [item for item in priorities or [] if item not in TICKET_PRIORITIES]
+        if invalid_priorities:
+            return _error_response(
+                422, "invalid_priority", f"priority must be one of {list(TICKET_PRIORITIES)}"
+            )
         unassigned = assignee == "none"
         assignee_id = None if unassigned or assignee is None else assignee
-        tickets = service.list_tickets(
-            actor,
+        filters = dict(
             statuses=statuses, priorities=priorities, assignee_id=assignee_id,
-            unassigned=unassigned, customer_id=customer_id, tag=tag,
-            search=search, limit=limit, offset=offset,
+            unassigned=unassigned, customer_id=customer_id, tag=tag, search=search,
         )
-        return {"total": len(tickets), "items": [serialize_ticket(item) for item in tickets]}
+        tickets = service.list_tickets(actor, **filters, limit=limit, offset=offset)
+        return {
+            "total": service.count_tickets(actor, **filters),
+            "items": [serialize_ticket(item) for item in tickets],
+        }
 
     @router.get("/tickets/{ticket_id}")
     def ticket_detail(ticket_id: str, actor: AgentContext = Depends(current_agent)):
@@ -317,7 +347,7 @@ def build_desk_router(service: DeskService) -> APIRouter:
         ticket_id: str, tag_id: str, actor: AgentContext = Depends(current_agent)
     ):
         service.remove_tag(actor, ticket_id, tag_id=tag_id)
-        return JSONResponse(status_code=204, content=None)
+        return Response(status_code=204)
 
     @router.get("/tickets/{ticket_id}/history")
     def ticket_history(ticket_id: str, actor: AgentContext = Depends(current_agent)):
@@ -391,11 +421,11 @@ def build_desk_router(service: DeskService) -> APIRouter:
     @router.get("/audit")
     def audit_log(
         actor: AgentContext = Depends(admin_agent),
-        limit: int = 100,
-        offset: int = 0,
+        limit: int = Query(default=100, ge=1, le=500),
+        offset: int = Query(default=0, ge=0),
     ):
         entries = service.audit_entries(actor, limit=limit, offset=offset)
-        return {"total": len(entries), "items": [entry.to_dict() for entry in entries]}
+        return {"total": service.count_audit(actor), "items": [entry.to_dict() for entry in entries]}
 
     return router
 
@@ -414,6 +444,13 @@ def register_desk_exception_handlers(app) -> None:
             if key not in ("code_override", "status_code_override")
         }
         return _error_response(status, code, str(error), **extra)
+
+    @app.exception_handler(DeskValidationError)
+    async def _handle_domain_validation(
+        request: Request, error: DeskValidationError
+    ) -> JSONResponse:
+        """Safety net: a raw domain ValueError must never surface as a 500."""
+        return _error_response(422, "validation_error", str(error))
 
     @app.exception_handler(AuthenticationError)
     async def _handle_auth(request: Request, error: AuthenticationError) -> JSONResponse:

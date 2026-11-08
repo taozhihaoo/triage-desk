@@ -109,6 +109,16 @@ class DeskService:
     def store(self) -> DeskStore:
         return self._store
 
+    @property
+    def provider(self) -> str:
+        """Configured provider name (informational: shown by the UI and health output)."""
+        return self._provider
+
+    @property
+    def model(self) -> str | None:
+        """Configured model name, when one is set."""
+        return self._model
+
     # -- permissions -------------------------------------------------------------
 
     @staticmethod
@@ -156,8 +166,23 @@ class DeskService:
             raise DeskNotFound(f"customer {customer_id} not found")
         return customer
 
-    def list_customers(self, actor: AgentContext, *, search: str | None = None) -> list[Customer]:
-        return self._store.list_customers(self._clean_search(search))
+    def list_customers(
+        self,
+        actor: AgentContext,
+        *,
+        search: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[Customer]:
+        return self._store.list_customers(
+            self._clean_search(search),
+            limit=min(max(limit, 1), 200),
+            offset=max(offset, 0),
+        )
+
+    def count_customers(self, actor: AgentContext, *, search: str | None = None) -> int:
+        """Total matches for a customer search, independent of the requested page."""
+        return self._store.count_customers(self._clean_search(search))
 
     def customer_tickets(self, actor: AgentContext, customer_id: str) -> list[Ticket]:
         self.get_customer(actor, customer_id)
@@ -225,6 +250,18 @@ class DeskService:
             messages=self._store.messages_for_ticket(ticket.id),
         )
 
+    def _ticket_filters(self, **filters) -> dict:
+        """Validate + normalize the filter vocabulary shared by list/count.
+
+        Domain ``DeskValidationError`` is converted to :class:`DeskValidation`
+        here so a bad filter never escapes as an opaque 500.
+        """
+        for status in filters.get("statuses") or []:
+            self._validated(status, TICKET_STATUSES, "ticket status")
+        for priority in filters.get("priorities") or []:
+            self._validated(priority, TICKET_PRIORITIES, "ticket priority")
+        return {**filters, "search": self._clean_search(filters.get("search"))}
+
     def list_tickets(
         self,
         actor: AgentContext,
@@ -239,16 +276,17 @@ class DeskService:
         limit: int = 50,
         offset: int = 0,
     ) -> list[Ticket]:
-        for status in statuses or []:
-            validate_choice(status, TICKET_STATUSES, "ticket status")
-        for priority in priorities or []:
-            validate_choice(priority, TICKET_PRIORITIES, "ticket priority")
-        return self._store.list_tickets(
+        filters = self._ticket_filters(
             statuses=statuses, priorities=priorities, assignee_id=assignee_id,
-            unassigned=unassigned, customer_id=customer_id, tag=tag,
-            search=self._clean_search(search),
-            limit=min(max(limit, 1), 200), offset=max(offset, 0),
+            unassigned=unassigned, customer_id=customer_id, tag=tag, search=search,
         )
+        return self._store.list_tickets(
+            **filters, limit=min(max(limit, 1), 200), offset=max(offset, 0),
+        )
+
+    def count_tickets(self, actor: AgentContext, **filters) -> int:
+        """Total matches for the same filters, independent of limit/offset."""
+        return self._store.count_tickets(**self._ticket_filters(**filters))
 
     def update_ticket(
         self,
@@ -270,6 +308,8 @@ class DeskService:
                 validate_transition(ticket.status, status)
             except InvalidTransitionError as exc:
                 raise DeskConflict(str(exc)) from None
+            except DeskValidationError as exc:
+                raise DeskValidation(str(exc)) from None
             fields["status"] = status
             events.append(("status_changed", {"from": ticket.status, "to": status}))
             if status == "resolved":
@@ -487,6 +527,10 @@ class DeskService:
     def audit_entries(self, actor: AgentContext, *, limit: int = 100, offset: int = 0) -> list[AuditEntry]:
         require_admin(actor)
         return self._store.list_audit(limit=min(max(limit, 1), 500), offset=max(offset, 0))
+
+    def count_audit(self, actor: AgentContext) -> int:
+        require_admin(actor)
+        return self._store.count_audit()
 
     # -- helpers ---------------------------------------------------------------------------------
 

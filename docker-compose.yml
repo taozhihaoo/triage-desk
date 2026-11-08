@@ -1,6 +1,7 @@
 services:
-  api:
+  app:
     build: .
+    container_name: triagedesk
     ports:
       - "8000:8000"
     environment:
@@ -9,11 +10,12 @@ services:
       LLM_PROVIDER: ${LLM_PROVIDER:-mock}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      TRIAGEDESK_DB_PATH: /app/data/triagedesk.db
     volumes:
-      - api-data:/app/data
-      - api-output:/app/output
+      - triagedesk-data:/app/data
+      - triagedesk-output:/app/output
     restart: unless-stopped
 
 volumes:
-  api-data:
-  api-output:
+  triagedesk-data:
+  triagedesk-output:

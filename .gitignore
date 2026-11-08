@@ -35,3 +35,6 @@ data/
 Thumbs.db
 .idea/
 .vscode/
+
+# --- Local agent workspace (notes/memory, not project source) ---
+.workbuddy/

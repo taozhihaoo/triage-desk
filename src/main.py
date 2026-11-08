@@ -1,4 +1,4 @@
-"""Command-line entry point.
+"""Command-line entry point (``triagedesk``).
 
 Works without any API key for ``--help``, ``--version`` and ``--demo`` (a
 fully offline mock provider), and reads ``OPENAI_API_KEY`` from the
@@ -39,11 +39,11 @@ REPORT_FORMATS = ("json", "csv", "both")
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="ai-inquiry-processor",
+        prog="triagedesk",
         description=(
-            "Summarize, categorize and prioritize customer inquiries from a CSV "
-            "using LLM structured outputs, persist results to SQLite, and emit "
-            "JSON + CSV reports."
+            "TriageDesk - summarize, categorize and prioritize customer inquiries "
+            "from a CSV using LLM structured outputs, persist results to SQLite, "
+            "and emit JSON + CSV reports."
         ),
         epilog=(
             "examples:\n"
@@ -63,7 +63,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--db", default=None,
-        help="SQLite database path (default: AI_INQUIRY_DB_PATH env var or data/inquiries.db)",
+        help="SQLite database path (default: TRIAGEDESK_DB_PATH env var or data/triagedesk.db)",
     )
     parser.add_argument(
         "--format", choices=REPORT_FORMATS, default="both",

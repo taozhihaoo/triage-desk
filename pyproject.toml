@@ -1,37 +1,52 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ai-inquiry-processor"
-version = "2.0.0"
-description = "Turn customer inquiries into structured triage reports via LLM structured outputs - CLI, REST API, SQLite persistence."
+name = "triagedesk"
+version = "3.0.0"
+description = "AI triage desk for customer inquiries: LLM structured-output triage, ticket workflow, RBAC and a bundled web UI on SQLite."
 readme = "README.md"
 requires-python = ">=3.11"
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "taozhihaoo" }]
-keywords = ["llm", "openai", "fastapi", "automation", "customer-support", "structured-outputs", "sqlite"]
+keywords = [
+    "llm",
+    "openai",
+    "fastapi",
+    "automation",
+    "customer-support",
+    "helpdesk",
+    "structured-outputs",
+    "sqlite",
+]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Framework :: FastAPI",
     "Topic :: Office/Business :: Customer Service",
 ]
 dependencies = [
     "openai>=1.40,<3",
     "fastapi>=0.115",
     "uvicorn>=0.30",
+    "pydantic>=2.7",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "httpx>=0.27", "ruff>=0.6"]
 
 [project.scripts]
-ai-inquiry = "src.main:main"
+triagedesk = "src.main:main"
 
-[tool.setuptools]
-packages = ["src"]
+[tool.setuptools.packages.find]
+include = ["src*"]
+
+[tool.setuptools.package-data]
+"src.desk" = ["web/*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

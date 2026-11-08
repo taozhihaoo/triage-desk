@@ -207,7 +207,7 @@ class DeskStore:
         params: list[Any] = []
         if search:
             pattern = f"%{_escape_like(search)}%"
-            query += " WHERE name LIKE ? ESCAPE '\\' OR email LIKE ? ESCAPE '\\'"
+            query += " WHERE (name LIKE ? ESCAPE '\\' OR email LIKE ? ESCAPE '\\')"
             params += [pattern, pattern]
         query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
         params += [limit, offset]
@@ -354,7 +354,7 @@ class DeskStore:
             if cursor.rowcount != 1:
                 raise StorageError(f"cannot update missing ticket {ticket_id!r}")
 
-    def list_tickets(
+    def _ticket_filter_sql(
         self,
         *,
         statuses: list[str] | None = None,
@@ -364,14 +364,8 @@ class DeskStore:
         customer_id: str | None = None,
         tag: str | None = None,
         search: str | None = None,
-        limit: int = 50,
-        offset: int = 0,
-    ) -> list[Ticket]:
-        query = (
-            "SELECT DISTINCT t.* FROM tickets t"
-            " JOIN customers c ON c.id = t.customer_id"
-            " LEFT JOIN ticket_messages m ON m.ticket_id = t.id"
-        )
+    ) -> tuple[list[str], list[Any]]:
+        """Build the WHERE conditions shared by ``list_tickets`` and ``count_tickets``."""
         conditions: list[str] = []
         params: list[Any] = []
         if statuses:
@@ -401,6 +395,30 @@ class DeskStore:
                 f"(t.subject{like} OR c.name{like} OR c.email{like} OR m.body{like})"
             )
             params += [pattern] * 4
+        return conditions, params
+
+    def list_tickets(
+        self,
+        *,
+        statuses: list[str] | None = None,
+        priorities: list[str] | None = None,
+        assignee_id: str | None = None,
+        unassigned: bool = False,
+        customer_id: str | None = None,
+        tag: str | None = None,
+        search: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[Ticket]:
+        query = (
+            "SELECT DISTINCT t.* FROM tickets t"
+            " JOIN customers c ON c.id = t.customer_id"
+            " LEFT JOIN ticket_messages m ON m.ticket_id = t.id"
+        )
+        conditions, params = self._ticket_filter_sql(
+            statuses=statuses, priorities=priorities, assignee_id=assignee_id,
+            unassigned=unassigned, customer_id=customer_id, tag=tag, search=search,
+        )
         if conditions:
             query += " WHERE " + " AND ".join(conditions)
         query += " ORDER BY t.updated_at DESC, t.id LIMIT ? OFFSET ?"
@@ -410,8 +428,29 @@ class DeskStore:
             return [self._ticket_from_row(row) for row in rows]
 
     def count_tickets(self, **filters: Any) -> int:
-        tickets = self.list_tickets(limit=10_000, offset=0, **filters)
-        return len(tickets)
+        """Number of tickets matching the same filters ``list_tickets`` accepts."""
+        query = (
+            "SELECT COUNT(DISTINCT t.id) AS n FROM tickets t"
+            " JOIN customers c ON c.id = t.customer_id"
+            " LEFT JOIN ticket_messages m ON m.ticket_id = t.id"
+        )
+        conditions, params = self._ticket_filter_sql(**filters)
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        with self._connections.connect() as connection:
+            row = connection.execute(query, params).fetchone()
+            return int(row["n"])
+
+    def count_customers(self, search: str | None = None) -> int:
+        query = "SELECT COUNT(*) AS n FROM customers"
+        params: list[Any] = []
+        if search:
+            pattern = f"%{_escape_like(search)}%"
+            query += " WHERE (name LIKE ? ESCAPE '\\' OR email LIKE ? ESCAPE '\\')"
+            params += [pattern, pattern]
+        with self._connections.connect() as connection:
+            row = connection.execute(query, params).fetchone()
+            return int(row["n"])
 
     # -- messages / notes / tags-on-ticket --------------------------------------
 
@@ -555,6 +594,11 @@ class DeskStore:
                  entry.entity_id, _dump_metadata(entry.metadata), entry.created_at),
             )
         return entry
+
+    def count_audit(self) -> int:
+        with self._connections.connect() as connection:
+            row = connection.execute("SELECT COUNT(*) AS n FROM audit_log").fetchone()
+            return int(row["n"])
 
     def list_audit(self, *, limit: int = 100, offset: int = 0) -> list[AuditEntry]:
         with self._connections.connect() as connection:

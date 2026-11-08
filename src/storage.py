@@ -21,6 +21,11 @@ from pathlib import Path
 
 MEMORY_DB = ":memory:"
 
+#: How long SQLite waits for a competing writer before raising "database is locked".
+#: One connection per operation means concurrent HTTP requests can collide; waiting
+#: a few seconds turns that into a short queue instead of a 500.
+BUSY_TIMEOUT_SECONDS = 5.0
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS processing_runs (
     run_id      TEXT PRIMARY KEY,
@@ -81,6 +86,7 @@ class SQLiteConnectionManager:
         self._path = str(db_path)
         self._memory = self._path == MEMORY_DB
         self._shared: sqlite3.Connection | None = None
+        self._ensure_wal = not self._memory
         if not self._memory:
             Path(self._path).parent.mkdir(parents=True, exist_ok=True)
 
@@ -95,12 +101,22 @@ class SQLiteConnectionManager:
             self._shared.commit()
             return
         try:
-            connection = sqlite3.connect(self._path)
+            connection = sqlite3.connect(self._path, timeout=BUSY_TIMEOUT_SECONDS)
         except sqlite3.Error as exc:
             raise StorageError(f"cannot open database {self._path!r}: {exc}") from exc
         connection.row_factory = sqlite3.Row
         try:
             connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute(f"PRAGMA busy_timeout = {int(BUSY_TIMEOUT_SECONDS * 1000)}")
+            if self._ensure_wal:
+                # WAL lets readers run while a writer holds the lock (no cross-process
+                # "database is locked" storms); the mode is persisted in the file, so
+                # one successful switch per process is enough.
+                try:
+                    connection.execute("PRAGMA journal_mode = WAL")
+                except sqlite3.Error:  # pragma: no cover - read-only or exotic filesystems
+                    pass
+                self._ensure_wal = False
             yield connection
             connection.commit()
         except sqlite3.Error as exc:

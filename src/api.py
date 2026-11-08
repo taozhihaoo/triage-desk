@@ -1,23 +1,30 @@
-"""HTTP API layer (FastAPI).
+"""HTTP API layer (FastAPI) — REST endpoints plus the bundled single-page UI.
 
-A thin transport wrapper around the shared :class:`InquiryService` — all
-business rules (idempotency, validation, persistence, error isolation) live
-in the service layer, and the API never touches a provider client or the
-database directly.
+A thin transport wrapper around the shared services — all business rules
+(idempotency, validation, persistence, error isolation, RBAC) live in the
+service layer, and the API never touches a provider client or the database
+directly.
 
 Error policy: provider/storage failures are converted into safe JSON error
 responses — no API keys, no internal tracebacks. The generic ``Exception``
 handler deliberately returns an opaque message (details stay in the logs).
+
+UI policy: ``src/desk/web`` is served as plain static files (no build step, no
+CDN, no network dependency), so ``docker compose up`` alone gives you a working
+interface at ``/``.
 """
 
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
+from src import __version__
 from src.config import load_config
 from src.desk.api import build_desk_router, register_desk_exception_handlers
 from src.desk.service import DeskService
@@ -28,6 +35,8 @@ from src.service import InquiryService
 from src.storage import InquiryRecord, InquiryStore, StorageError
 
 logger = logging.getLogger(__name__)
+
+WEB_DIR = Path(__file__).resolve().parent / "desk" / "web"
 
 
 # -- request / response schemas (API boundary only) -----------------------------
@@ -111,12 +120,12 @@ def create_app(
     when omitted both are wired from configuration over the same database.
     """
     app = FastAPI(
-        title="AI Inquiry Processor",
+        title="TriageDesk",
         description=(
-            "Inquiry triage (LLM structured outputs) and an AI customer support desk: "
-            "customers, tickets, tags, assignment, notes, history, search, audit."
+            "AI triage desk for customer inquiries: LLM structured-output triage plus "
+            "customers, tickets, tags, assignment, notes, history, search and audit."
         ),
-        version="1.0.0",
+        version=__version__,
     )
     state = app.state
 
@@ -159,6 +168,7 @@ def create_app(
     state.desk_service = desk_service
     register_desk_exception_handlers(app)
     app.include_router(build_desk_router(desk_service))
+    _mount_ui(app)
 
     @app.exception_handler(LLMClientError)
     async def _llm_error_handler(_: Request, exc: LLMClientError) -> JSONResponse:
@@ -235,6 +245,29 @@ def create_app(
         return record_to_out(record)
 
     return app
+
+
+def _mount_ui(app: FastAPI) -> None:
+    """Serve the bundled UI (static files, mounted last so API routes win).
+
+    Mounted at ``/assets`` and a single HTML entry at ``/``: no template engine,
+    no bundler, nothing to install. If the directory is missing (e.g. an
+    install that skipped package data) the API keeps working and only ``/``
+    is unavailable.
+    """
+    if not (WEB_DIR / "index.html").is_file():  # pragma: no cover - degraded install
+        logger.warning("UI assets not found at %s — serving the API only", WEB_DIR)
+        return
+
+    app.mount("/assets", StaticFiles(directory=str(WEB_DIR)), name="assets")
+
+    @app.get("/", include_in_schema=False)
+    def index() -> FileResponse:
+        return FileResponse(WEB_DIR / "index.html", media_type="text/html")
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    def favicon() -> FileResponse:
+        return FileResponse(WEB_DIR / "favicon.svg", media_type="image/svg+xml")
 
 
 app = create_app()

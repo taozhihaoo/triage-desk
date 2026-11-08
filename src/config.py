@@ -5,6 +5,10 @@ environment-dependent (API key, model, timeouts, retry policy) is loaded into
 the :class:`AppConfig` dataclass here, and the rest of the codebase only ever
 receives plain constructor arguments. That keeps providers, processor and
 reporting fully decoupled from the environment they run in.
+
+Environment variables use the ``TRIAGEDESK_`` prefix for app-owned settings;
+the pre-rename ``AI_INQUIRY_`` names are still honoured so existing
+deployments and ``.env`` files keep working.
 """
 
 from __future__ import annotations
@@ -20,11 +24,14 @@ DEFAULT_MAX_RETRIES = 3
 DEFAULT_RETRY_INITIAL_DELAY = 1.0
 DEFAULT_RETRY_MAX_DELAY = 10.0
 DEFAULT_OUTPUT_DIR = "output"
-DEFAULT_DB_PATH = "data/inquiries.db"
+DEFAULT_DB_PATH = "data/triagedesk.db"
 
 VALID_PROVIDERS = ("openai", "mock")
 
 DOTENV_PATH = Path(".env")
+
+#: Legacy prefixes kept for backwards compatibility (checked after the current one).
+LEGACY_ENV_PREFIXES = ("AI_INQUIRY_",)
 
 
 class ConfigError(ValueError):
@@ -72,6 +79,19 @@ def load_dotenv(path: Path = DOTENV_PATH) -> None:
 def _env(name: str) -> str | None:
     value = os.environ.get(name)
     return value if value else None
+
+
+def _app_env(name: str) -> str | None:
+    """Read an app-owned setting, preferring the current prefix over legacy names.
+
+    ``name`` is given without prefix (e.g. ``"DB_PATH"``): ``TRIAGEDESK_DB_PATH``
+    wins, then the legacy ``AI_INQUIRY_DB_PATH``.
+    """
+    for prefix in ("TRIAGEDESK_", *LEGACY_ENV_PREFIXES):
+        value = _env(f"{prefix}{name}")
+        if value is not None:
+            return value
+    return None
 
 
 def _first(*values: object) -> object:
@@ -124,7 +144,7 @@ def load_config(
     """
     load_dotenv()
     resolved_provider = str(
-        _first(provider, _env("LLM_PROVIDER"), _env("AI_INQUIRY_PROVIDER"), DEFAULT_PROVIDER)
+        _first(provider, _app_env("PROVIDER"), _env("LLM_PROVIDER"), DEFAULT_PROVIDER)
     ).lower()
     if resolved_provider not in VALID_PROVIDERS:
         raise ConfigError(
@@ -141,8 +161,8 @@ def load_config(
             _first(_float_env("LLM_RETRY_INITIAL_DELAY", DEFAULT_RETRY_INITIAL_DELAY))
         ),
         retry_max_delay=float(_first(_float_env("LLM_RETRY_MAX_DELAY", DEFAULT_RETRY_MAX_DELAY))),
-        output_dir=Path(str(_first(output_dir, _env("AI_INQUIRY_OUTPUT_DIR"), DEFAULT_OUTPUT_DIR))),
-        db_path=Path(str(_first(db_path, _env("AI_INQUIRY_DB_PATH"), DEFAULT_DB_PATH))),
+        output_dir=Path(str(_first(output_dir, _app_env("OUTPUT_DIR"), DEFAULT_OUTPUT_DIR))),
+        db_path=Path(str(_first(db_path, _app_env("DB_PATH"), DEFAULT_DB_PATH))),
         price_input_per_mtok=_float_env_opt("LLM_PRICE_INPUT_PER_MTOK"),
         price_output_per_mtok=_float_env_opt("LLM_PRICE_OUTPUT_PER_MTOK"),
     )
